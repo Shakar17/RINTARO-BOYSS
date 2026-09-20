@@ -47,6 +47,7 @@ function configuredBots() {
 
 const sessions = new Map();
 const bots = [];
+const loginDelayMs = 5_000;
 
 function getAudioPath(filename) {
   if (!filename || path.basename(filename) !== filename) return null;
@@ -336,13 +337,13 @@ function disconnect(botNumber, guildIdToDisconnect) {
   return true;
 }
 
-function attachBot(bot) {
+function attachBot(bot, loginDelay = 0) {
   if (!bot.token || bot.token.startsWith('replace-with-')) {
     bots.push({ ...bot, client: null, status: 'missing-token', statusMessage: 'Add this bot token in Render.' });
       addLog('error', `Bot ${bot.number} is not started: DISCORD_TOKEN_${bot.number} is missing in Render.`);
     return;
   }
-  addLog('info', `Bot ${bot.number} token configured. Attempting Discord login.`);
+  addLog('info', `Bot ${bot.number} token configured. Login scheduled in ${loginDelay / 1000}s.`);
   const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates] });
   const botState = { ...bot, client, status: bot.status };
   bots.push(botState);
@@ -361,6 +362,10 @@ function attachBot(bot) {
     addLog('error', `Bot ${bot.number} Discord client error: ${botState.statusMessage}.`);
   });
 
+  client.on('debug', (message) => {
+    addLog('info', `Bot ${bot.number} Discord gateway: ${message.replaceAll(bot.token, '[REDACTED]')}`);
+  });
+
   client.on('voiceStateUpdate', (oldState, newState) => {
     if (newState.id !== client.user?.id) return;
     addLog('info', `Bot ${bot.number} Discord voice state: ${oldState.channelId || 'none'} -> ${newState.channelId || 'none'}.`);
@@ -369,17 +374,21 @@ function attachBot(bot) {
   const loginTimeout = setTimeout(() => {
     if (botState.status !== 'starting') return;
     botState.status = 'error';
-    botState.statusMessage = 'Discord login timed out after 30 seconds. Check the token and Render network access.';
-    addLog('error', `Bot ${bot.number} login timed out. Check the token and Render network access.`);
+    botState.statusMessage = 'Discord login timed out. Check the token and Render network access.';
+    addLog('error', `Bot ${bot.number} login timed out after ${Math.round((loginDelay + 60_000) / 1000)} seconds. Check the token and Render network access.`);
     client.destroy();
-  }, 30_000);
+  }, loginDelay + 60_000);
 
-  client.login(bot.token).catch((error) => {
-    clearTimeout(loginTimeout);
-    botState.status = 'error';
-    botState.statusMessage = error.code === 4004 ? 'Invalid token' : error.message;
-    addLog('error', `Bot ${bot.number} login failed: ${botState.statusMessage}.`);
-  });
+  setTimeout(() => {
+    if (botState.status !== 'starting') return;
+    addLog('info', `Bot ${bot.number} is starting Discord login now.`);
+    client.login(bot.token).catch((error) => {
+      clearTimeout(loginTimeout);
+      botState.status = 'error';
+      botState.statusMessage = error.code === 4004 ? 'Invalid token' : error.message;
+      addLog('error', `Bot ${bot.number} login failed: ${botState.statusMessage}.`);
+    });
+  }, loginDelay);
 }
 
 function requireAdmin(request, response, next) {
@@ -455,4 +464,4 @@ const configured = configuredBots();
 const tokenCount = configured.filter((bot) => bot.token && !bot.token.startsWith('replace-with-')).length;
 addLog('info', `Configured ${tokenCount}/${botCount} Discord bot token(s).`);
 if (!tokenCount) addLog('error', `No Discord bot tokens configured. Add DISCORD_TOKEN_1 through DISCORD_TOKEN_${botCount} in Render.`);
-configured.forEach(attachBot);
+configured.forEach((bot, index) => attachBot(bot, index * loginDelayMs));
