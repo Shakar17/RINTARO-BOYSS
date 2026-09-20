@@ -40,8 +40,8 @@ function addLog(level, message) {
 function configuredBots() {
   return Array.from({ length: botCount }, (_, index) => ({
     number: index + 1,
-    token: process.env[`DISCORD_TOKEN_${index + 1}`],
-    status: process.env[`DISCORD_TOKEN_${index + 1}`] && !process.env[`DISCORD_TOKEN_${index + 1}`].startsWith('replace-with-') ? 'starting' : 'missing-token',
+    token: process.env[`DISCORD_TOKEN_${index + 1}`]?.trim().replace(/^(["'])(.*)\1$/, '$2'),
+    status: process.env[`DISCORD_TOKEN_${index + 1}`]?.trim() && !process.env[`DISCORD_TOKEN_${index + 1}`].trim().startsWith('replace-with-') ? 'starting' : 'missing-token',
   }));
 }
 
@@ -348,10 +348,17 @@ function attachBot(bot) {
   bots.push(botState);
 
   client.once('ready', (readyClient) => {
+    clearTimeout(loginTimeout);
     botState.status = 'online';
     botState.statusMessage = 'Connected to Discord';
     botState.tag = readyClient.user.tag;
     addLog('info', `Bot ${bot.number} login successful as ${readyClient.user.tag}. Servers: ${readyClient.guilds.cache.size}.`);
+  });
+
+  client.on('error', (error) => {
+    botState.status = 'error';
+    botState.statusMessage = error.code === 4004 ? 'Invalid token' : error.message;
+    addLog('error', `Bot ${bot.number} Discord client error: ${botState.statusMessage}.`);
   });
 
   client.on('voiceStateUpdate', (oldState, newState) => {
@@ -359,7 +366,16 @@ function attachBot(bot) {
     addLog('info', `Bot ${bot.number} Discord voice state: ${oldState.channelId || 'none'} -> ${newState.channelId || 'none'}.`);
   });
 
+  const loginTimeout = setTimeout(() => {
+    if (botState.status !== 'starting') return;
+    botState.status = 'error';
+    botState.statusMessage = 'Discord login timed out after 30 seconds. Check the token and Render network access.';
+    addLog('error', `Bot ${bot.number} login timed out. Check the token and Render network access.`);
+    client.destroy();
+  }, 30_000);
+
   client.login(bot.token).catch((error) => {
+    clearTimeout(loginTimeout);
     botState.status = 'error';
     botState.statusMessage = error.code === 4004 ? 'Invalid token' : error.message;
     addLog('error', `Bot ${bot.number} login failed: ${botState.statusMessage}.`);
